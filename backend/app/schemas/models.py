@@ -12,8 +12,8 @@ class ModelProvider(str, Enum):
     """Supported LLM providers."""
 
     OPENAI = "openai"
+    OPENAI4O = "gpt-4o"  # Optimized GPT-4 configuration
     ANTHROPIC = "anthropic"
-    OPENAI4O = "openai4o"  # Default provider as per requirements
 
 
 class DashboardGenerationRequest(BaseModel):

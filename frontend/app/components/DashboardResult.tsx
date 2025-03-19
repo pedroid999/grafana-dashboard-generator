@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { AlertCircle, CheckCircle, Clock, XCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle, Clock, XCircle, Plus } from 'lucide-react';
 import { dashboardService } from '../domain/services/dashboardService';
 import { TaskResponse, HumanFeedbackResponse } from '../types/dashboard';
 
@@ -23,7 +23,10 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
   useEffect(() => {
     if (!taskId) return;
     
+    console.log("Starting to poll for task ID:", taskId);
+    
     dashboardService.pollTaskStatus(taskId, (status) => {
+      console.log("Task status update:", status);
       setTaskStatus(status);
     });
   }, [taskId]);
@@ -56,11 +59,11 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
       const response = await dashboardService.submitHumanFeedback(taskId, feedback);
       setTaskStatus(response);
     } catch (err) {
+      console.error("Error submitting feedback:", err);
       if (err instanceof SyntaxError) {
         setError('Invalid JSON format. Please correct the JSON before submitting.');
       } else {
         setError('Failed to submit feedback. Please try again.');
-        console.error(err);
       }
     } finally {
       setIsSubmittingFeedback(false);
@@ -71,82 +74,121 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
     return (
       <div className="flex items-center justify-center h-64">
         <div className="flex flex-col items-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2" style={{ borderColor: 'var(--primary)' }}></div>
+          <p className="mt-4" style={{ color: 'var(--gray-600)' }}>Loading task status for ID: {taskId}...</p>
         </div>
       </div>
     );
   }
   
   return (
-    <div className="bg-white shadow-md rounded-lg p-6">
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-xl font-semibold">Dashboard Generation Result</h2>
-        <button
-          onClick={onReset}
-          className="text-blue-600 hover:text-blue-800 font-medium"
-        >
-          Start New Generation
-        </button>
+    <div className="card">
+      <div className="flex flex-col mb-12">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-xl font-semibold">Dashboard Generation Result</h2>
+        </div>
+        
+        <div>
+          <button
+            onClick={onReset}
+            className="btn font-medium px-4 py-2 bg-gray-100 hover:bg-gray-200 transition-colors inline-flex items-center justify-center"
+            style={{ color: 'var(--primary)' }}
+          >
+            <Plus size={16} className="mr-2" style={{ marginTop: '-1px' }} />
+            <span>Start New Generation</span>
+          </button>
+        </div>
       </div>
       
-      <div className="mb-6">
-        <div className="flex items-center mb-2">
-          <span className="font-medium text-gray-700 mr-2">Status:</span>
+      <div className="p-5 bg-gray-50 rounded-md mb-6 border border-gray-200">
+        <div className="flex items-center mb-3">
+          <span className="font-medium mr-3" style={{ color: 'var(--gray-700)' }}>Status:</span>
           <StatusBadge status={taskStatus.status} />
         </div>
-        <div className="text-sm text-gray-600">
+        <div style={{ fontSize: '0.875rem', color: 'var(--gray-600)' }}>
           <p>Task ID: {taskId}</p>
           {taskStatus.result?.retry_count !== undefined && (
-            <p>Retry Count: {taskStatus.result.retry_count}</p>
+            <p className="mt-2">Retry Count: {taskStatus.result.retry_count}</p>
           )}
         </div>
       </div>
       
       {/* Display error if any */}
       {(taskStatus.error || error) && (
-        <div className="bg-red-50 text-red-600 p-4 rounded-md mb-6">
+        <div style={{ 
+          backgroundColor: '#FEF2F2', 
+          color: '#DC2626', 
+          padding: '1rem', 
+          borderRadius: '0.375rem', 
+          marginBottom: '1.5rem' 
+        }}>
           <p className="font-medium">Error:</p>
           <p>{taskStatus.error || error}</p>
         </div>
       )}
       
+      {/* Debug information */}
+      <div style={{ 
+        backgroundColor: '#EFF6FF', 
+        padding: '1rem', 
+        borderRadius: '0.375rem', 
+        marginBottom: '1.5rem',
+        fontFamily: 'monospace',
+        fontSize: '0.875rem'
+      }}>
+        <p className="font-medium mb-2">Debug Information:</p>
+        <SyntaxHighlighter 
+          language="json" 
+          style={vscDarkPlus}
+          customStyle={{ margin: 0 }}
+        >
+          {JSON.stringify(taskStatus, null, 2)}
+        </SyntaxHighlighter>
+        <p className="mt-2 text-xs">API Base URL: {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}</p>
+      </div>
+      
       {/* Human feedback form when intervention required */}
       {taskStatus.status === 'completed' && 
        taskStatus.result?.required_human_intervention && (
         <div className="mb-6">
-          <div className="bg-yellow-50 text-yellow-700 p-4 rounded-md mb-4">
+          <div style={{ 
+            backgroundColor: '#FFFBEB', 
+            color: '#B45309', 
+            padding: '1rem', 
+            borderRadius: '0.375rem', 
+            marginBottom: '1rem' 
+          }}>
             <div className="flex items-center mb-2">
               <AlertCircle size={20} className="mr-2" />
               <h3 className="font-medium">Human Intervention Required</h3>
             </div>
-            <p className="text-sm">
+            <p style={{ fontSize: '0.875rem' }}>
               The dashboard JSON has validation errors that could not be automatically fixed.
               Please review and correct the JSON below.
             </p>
           </div>
           
           <div className="mb-4">
-            <label htmlFor="feedbackJson" className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="feedbackJson" className="form-label">
               Dashboard JSON (Edit to fix errors)
             </label>
             <textarea
               id="feedbackJson"
               rows={10}
-              className="w-full font-mono text-sm border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              className="form-input font-mono text-sm"
               value={feedbackJson}
               onChange={(e) => setFeedbackJson(e.target.value)}
             />
           </div>
           
           <div className="mb-4">
-            <label htmlFor="feedbackMessage" className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="feedbackMessage" className="form-label">
               Feedback Message (Optional)
             </label>
             <textarea
               id="feedbackMessage"
               rows={2}
-              className="w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              className="form-input"
               placeholder="Any additional notes about your changes..."
               value={feedbackMessage}
               onChange={(e) => setFeedbackMessage(e.target.value)}
@@ -156,7 +198,7 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
           <button
             onClick={handleFeedbackSubmit}
             disabled={isSubmittingFeedback}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
+            className="btn btn-primary w-full"
           >
             {isSubmittingFeedback ? 'Submitting...' : 'Submit Feedback'}
           </button>
@@ -168,8 +210,12 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
        taskStatus.result?.dashboard_json && 
        !taskStatus.result?.required_human_intervention && (
         <div>
-          <h3 className="font-medium text-gray-700 mb-2">Dashboard JSON</h3>
-          <div className="border border-gray-200 rounded-md overflow-hidden">
+          <h3 className="font-medium mb-2" style={{ color: 'var(--gray-700)' }}>Dashboard JSON</h3>
+          <div style={{ 
+            border: '1px solid var(--gray-200)', 
+            borderRadius: '0.375rem', 
+            overflow: 'hidden' 
+          }}>
             <SyntaxHighlighter 
               language="json" 
               style={vscDarkPlus}
@@ -178,7 +224,7 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
               {JSON.stringify(taskStatus.result.dashboard_json, null, 2)}
             </SyntaxHighlighter>
           </div>
-          <p className="mt-4 text-sm text-gray-600">
+          <p className="mt-4" style={{ fontSize: '0.875rem', color: 'var(--gray-600)' }}>
             You can now import this JSON into Grafana to create your dashboard.
           </p>
         </div>
@@ -189,31 +235,42 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
 
 // Status badge component
 function StatusBadge({ status }: { status: string }) {
+  const getBadgeStyles = (bgColor: string, textColor: string) => ({
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '0.125rem 0.625rem',
+    borderRadius: '9999px',
+    fontSize: '0.75rem',
+    fontWeight: '500',
+    backgroundColor: bgColor,
+    color: textColor
+  });
+
   switch (status) {
     case 'pending':
       return (
-        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-          <Clock size={14} className="mr-1" />
+        <span style={getBadgeStyles('#DBEAFE', '#1E40AF')}>
+          <Clock size={14} style={{ marginRight: '0.25rem' }} />
           Processing
         </span>
       );
     case 'completed':
       return (
-        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-          <CheckCircle size={14} className="mr-1" />
+        <span style={getBadgeStyles('#DCFCE7', '#166534')}>
+          <CheckCircle size={14} style={{ marginRight: '0.25rem' }} />
           Completed
         </span>
       );
     case 'failed':
       return (
-        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-          <XCircle size={14} className="mr-1" />
+        <span style={getBadgeStyles('#FEE2E2', '#B91C1C')}>
+          <XCircle size={14} style={{ marginRight: '0.25rem' }} />
           Failed
         </span>
       );
     default:
       return (
-        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+        <span style={getBadgeStyles('#F3F4F6', '#374151')}>
           {status}
         </span>
       );

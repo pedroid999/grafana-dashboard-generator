@@ -25,7 +25,7 @@ export function useDashboardModels() {
         setError('Failed to load available models');
         // Fallback to default models if API fails
         setModels([
-          { id: 'openai4o', name: 'OpenAI4o (Default)' },
+          { id: 'gpt-4o', name: 'GPT-4 Optimized (Default)' },
           { id: 'openai', name: 'OpenAI GPT-4 Turbo' },
           { id: 'anthropic', name: 'Anthropic Claude 3 Opus' },
         ]);

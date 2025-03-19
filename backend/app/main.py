@@ -4,22 +4,31 @@ FastAPI application for Grafana Dashboard Generator.
 
 import json
 import os
+import logging
 from typing import Any, Dict, List, Optional
 
 import dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
 from app.agents.dashboard_agent import run_dashboard_agent
 from app.schemas.models import (
-    DashboardGenerationRequest,
-    DashboardGenerationResponse,
-    HumanFeedbackRequest,
-    HumanFeedbackResponse,
     ModelProvider,
 )
+from app.schemas.dashboard import (
+    DashboardGenerationRequest,
+    DashboardGenerationResponse,
+    DashboardTaskResponse,
+)
+from app.utils.task_store import task_store
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
+logger = logging.getLogger("app.main")
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -40,30 +49,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Store for running tasks and their results
-tasks_store: Dict[str, Dict[str, Any]] = {}
-
-
-class TaskResponse(BaseModel):
-    """Response model for background tasks."""
-    
-    task_id: str = Field(..., description="Unique task ID")
-    status: str = Field(..., description="Task status (pending, completed, failed)")
-
-
-class TaskStatusResponse(TaskResponse):
-    """Response model for task status."""
-    
-    result: Optional[Dict[str, Any]] = Field(
-        default=None, description="Result if task is completed"
-    )
-
-
-def generate_task_id() -> str:
-    """Generate a unique task ID."""
-    import uuid
-    
-    return str(uuid.uuid4())
+# Include routers - Make sure these are registered correctly
+from app.routes import dashboard
+app.include_router(dashboard.router, prefix="/api")
 
 
 async def run_dashboard_generation_task(
@@ -77,44 +65,55 @@ async def run_dashboard_generation_task(
         request: Dashboard generation request
     """
     try:
-        # Set task as pending
-        tasks_store[task_id] = {"status": "pending"}
+        logger.info(f"Task {task_id} starting - model: {request.model_provider}, prompt: {request.prompt}")
         
         # Run the dashboard agent
+        logger.debug(f"Calling dashboard agent with params: {request}")
         result = run_dashboard_agent(
             prompt=request.prompt,
             model_provider=request.model_provider,
             max_retries=request.max_retries,
+            use_rag=request.use_rag,
         )
         
-        # Update task store
-        tasks_store[task_id] = {
-            "status": "completed",
-            "result": {
-                "dashboard_json": result["dashboard_json"],
-                "validation_passed": result["validation_passed"],
-                "required_human_intervention": result["required_human_intervention"],
-                "retry_count": result["retry_count"],
-            },
-        }
+        logger.info(f"Task {task_id} completed with status: {result.get('status', 'unknown')}")
+        logger.debug(f"Result: {result}")
+        
+        # Update task store with result
+        task_store.update_task(
+            task_id=task_id,
+            status=result.get("status", "failed"),
+            error=result.get("error_message"),
+            result={
+                "dashboard_json": result.get("dashboard_json"),
+                "retry_count": result.get("retry_count", 0),
+                "required_human_intervention": False,  # Default to false
+            }
+        )
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Task {task_id} failed with error: {str(e)}")
+        logger.error(f"Error details: {error_details}")
+        
         # Update task store with error
-        tasks_store[task_id] = {
-            "status": "failed",
-            "error": str(e),
-        }
+        task_store.update_task(
+            task_id=task_id,
+            status="failed",
+            error=f"Internal error: {str(e)}. Details: {error_details[:500]}"
+        )
 
 
 @app.post(
     "/api/dashboards/generate", 
-    response_model=TaskResponse,
+    response_model=DashboardTaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Generate a Grafana dashboard",
     description="Start a dashboard generation task based on the provided prompt and model settings",
 )
 async def generate_dashboard(
     request: DashboardGenerationRequest, background_tasks: BackgroundTasks
-) -> Dict[str, Any]:
+) -> DashboardTaskResponse:
     """
     Generate a Grafana dashboard based on a natural language prompt.
     
@@ -125,109 +124,37 @@ async def generate_dashboard(
     Returns:
         Task ID and status
     """
-    # Generate task ID
-    task_id = generate_task_id()
+    # Create new task
+    task_id = task_store.create_task()
     
     # Start background task
     background_tasks.add_task(run_dashboard_generation_task, task_id, request)
     
-    return {
-        "task_id": task_id,
-        "status": "pending",
-    }
+    # Return task info
+    return task_store.get(task_id)
 
 
-@app.get(
-    "/api/tasks/{task_id}",
-    response_model=TaskStatusResponse,
-    summary="Get task status",
-    description="Get the status of a running or completed task",
-)
-async def get_task_status(task_id: str) -> Dict[str, Any]:
+@app.get("/api/tasks/{task_id}", response_model=DashboardTaskResponse)
+async def get_task_status(task_id: str) -> DashboardTaskResponse:
     """
-    Get the status of a task.
+    Get the status of a dashboard generation task.
     
     Args:
         task_id: Unique task ID
         
     Returns:
-        Task status and result if completed
+        Task status
     """
-    if task_id not in tasks_store:
+    task = task_store.get(task_id)
+    if not task:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Task with ID {task_id} not found",
+            status_code=404,
+            detail=f"Task with ID {task_id} not found"
         )
-    
-    task_info = tasks_store[task_id]
-    response = {
-        "task_id": task_id,
-        "status": task_info["status"],
-    }
-    
-    if task_info["status"] == "completed" and "result" in task_info:
-        response["result"] = task_info["result"]
-    elif task_info["status"] == "failed" and "error" in task_info:
-        response["error"] = task_info["error"]
-    
-    return response
+    return task
 
 
-@app.post(
-    "/api/tasks/{task_id}/feedback",
-    response_model=TaskStatusResponse,
-    summary="Provide human feedback",
-    description="Submit human feedback for a dashboard that required intervention",
-)
-async def submit_human_feedback(
-    task_id: str, feedback: HumanFeedbackResponse
-) -> Dict[str, Any]:
-    """
-    Submit human feedback for a dashboard.
-    
-    Args:
-        task_id: Unique task ID
-        feedback: Human feedback response
-        
-    Returns:
-        Updated task status
-    """
-    if task_id not in tasks_store:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Task with ID {task_id} not found",
-        )
-    
-    task_info = tasks_store[task_id]
-    
-    # Check if task requires human feedback
-    if (
-        task_info["status"] == "completed"
-        and "result" in task_info
-        and task_info["result"].get("required_human_intervention", False)
-    ):
-        # Update the task with human feedback
-        task_info["result"]["dashboard_json"] = feedback.corrected_json
-        task_info["result"]["human_feedback"] = feedback.feedback
-        task_info["result"]["validation_passed"] = True  # Assume human-corrected JSON is valid
-        
-        return {
-            "task_id": task_id,
-            "status": "completed",
-            "result": task_info["result"],
-        }
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Task does not require human feedback or is not in the correct state",
-        )
-
-
-@app.get(
-    "/api/models",
-    summary="List available LLM models",
-    description="Get a list of available LLM providers/models",
-)
+@app.get("/api/models")
 async def list_models() -> Dict[str, List[Dict[str, str]]]:
     """
     List available LLM models.
@@ -250,13 +177,6 @@ async def health_check() -> Dict[str, str]:
     Health check endpoint.
     
     Returns:
-        Health status
+        Status message
     """
-    return {"status": "ok"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-    
-    # Start the FastAPI app with Uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    return {"status": "ok"} 

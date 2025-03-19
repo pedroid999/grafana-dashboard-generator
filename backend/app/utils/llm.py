@@ -3,6 +3,7 @@ LLM utilities and provider configuration.
 """
 
 import os
+import logging
 from typing import Any, Dict, List, Optional
 
 from langchain_anthropic import ChatAnthropic
@@ -13,6 +14,7 @@ from langchain_openai import ChatOpenAI
 
 from app.schemas.models import ModelProvider
 
+logger = logging.getLogger(__name__)
 
 def get_llm(provider: ModelProvider, **kwargs: Any) -> BaseChatModel:
     """
@@ -30,24 +32,37 @@ def get_llm(provider: ModelProvider, **kwargs: Any) -> BaseChatModel:
     """
     temperature = kwargs.get("temperature", 0.1)  # Low temperature for JSON generation
     
-    if provider == ModelProvider.OPENAI:
+    try:
+        if provider == ModelProvider.OPENAI:
+            return ChatOpenAI(
+                model="gpt-4-0125-preview",  # Using a known available model
+                temperature=temperature,
+            )
+        elif provider == ModelProvider.OPENAI4O:
+            # For optimized version, using GPT-4 Turbo with specific settings
+            return ChatOpenAI(
+                model="gpt-4-0125-preview",  # Using a known available model
+                temperature=temperature,
+                max_tokens=4096,  # Ensure enough context for JSON generation
+                top_p=0.1,  # More focused sampling
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+            )
+        elif provider == ModelProvider.ANTHROPIC:
+            return ChatAnthropic(
+                model="claude-3-opus-20240229",
+                temperature=temperature,
+            )
+        else:
+            raise ValueError(f"Unsupported model provider: {provider}")
+    except Exception as e:
+        logger.error(f"Error initializing LLM for provider {provider}: {str(e)}")
+        # Fallback to GPT-4 if available
+        logger.info("Attempting to fallback to GPT-4...")
         return ChatOpenAI(
-            model="gpt-4-turbo",
+            model="gpt-4",
             temperature=temperature,
         )
-    elif provider == ModelProvider.OPENAI4O:
-        # For "OpenAI4o", using the same ChatOpenAI but with specific model
-        return ChatOpenAI(
-            model="gpt-4o-2024-05-13",  # Adjust based on actual available models
-            temperature=temperature,
-        )
-    elif provider == ModelProvider.ANTHROPIC:
-        return ChatAnthropic(
-            model="claude-3-opus-20240229",
-            temperature=temperature,
-        )
-    else:
-        raise ValueError(f"Unsupported model provider: {provider}")
 
 
 # System prompts for different tasks
@@ -62,6 +77,19 @@ The generated JSON should follow these guidelines:
 5. Ensure the dashboard is well-organized and visually effective
 
 IMPORTANT: You must output ONLY the valid JSON object with no additional text or explanations.
+
+Example of a valid panel structure:
+{
+  "id": 1,
+  "type": "graph",
+  "title": "Panel Title",
+  "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 0
+  }
+}
 """
 
 DASHBOARD_FIX_SYSTEM_PROMPT = """You are an expert in fixing Grafana dashboard JSON configurations.
@@ -74,6 +102,19 @@ IMPORTANT:
 2. Only output the fixed JSON with no additional text or explanation
 3. Ensure all required fields are present and have the correct types
 4. Maintain as much of the original structure and intent as possible
+
+Example of a valid panel structure:
+{
+  "id": 1,
+  "type": "graph",
+  "title": "Panel Title",
+  "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 0
+  }
+}
 """
 
 RAG_AUGMENTED_PROMPT = """I am generating a Grafana dashboard for the following description:
@@ -86,6 +127,12 @@ I have some additional context that might be helpful:
 
 Please generate a complete, valid JSON configuration for a Grafana dashboard based on this information. 
 Make sure to include all required fields and properties according to the Grafana dashboard schema.
+
+The JSON must include:
+1. A dashboard title
+2. At least one panel with proper configuration
+3. Valid gridPos for each panel
+4. Appropriate data source and query configuration
 """
 
 

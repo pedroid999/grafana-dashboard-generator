@@ -3,11 +3,12 @@ LangGraph agent for Grafana dashboard generation.
 """
 
 import json
+import logging
+import re
 from typing import Any, Annotated, Dict, List, Optional, TypedDict
 
-import langgraph.graph as lg
-from langgraph import graph
-from langgraph.checkpoint import Checkpoint
+from langgraph.graph import Graph
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 
@@ -28,6 +29,40 @@ from app.utils.llm import (
     get_llm,
 )
 
+# Add debugger import
+import pdb
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# Function definitions for state management 
+
+def is_valid_dashboard(state: Dict[str, Any]) -> bool:
+    """Check if the dashboard is valid."""
+    return state.get("is_valid", False) is True
+
+
+def should_retry(state: Dict[str, Any]) -> bool:
+    """Check if we should retry fixing the dashboard."""
+    is_valid = state.get("is_valid")
+    retry_count = state.get("retry_count", 0)
+    max_retries = state.get("max_retries", 3)
+    
+    # Not valid and still have retries left
+    return is_valid is False and retry_count < max_retries
+
+
+def should_end(state: Dict[str, Any]) -> bool:
+    """Check if we should end the generation process."""
+    is_valid = state.get("is_valid")
+    retry_count = state.get("retry_count", 0)
+    max_retries = state.get("max_retries", 3)
+    
+    # Not valid and used up all retries
+    return is_valid is False and retry_count >= max_retries
+
+# State initialization
 
 def initialize_state(
     prompt: str, model_provider: ModelProvider, max_retries: int = 3
@@ -43,6 +78,7 @@ def initialize_state(
     Returns:
         Initialized AgentState object
     """
+    # DEBUGGING PUNTO 1: Inicialización del estado del agente
     return AgentState(
         prompt=prompt,
         model_provider=model_provider,
@@ -61,315 +97,584 @@ def add_rag_context(state: AgentState) -> AgentState:
     Returns:
         Updated agent state with RAG context
     """
+    # DEBUGGING PUNTO 2: Obtención del contexto RAG
     rag_context = get_rag_context(state.prompt)
     state.rag_context = rag_context
     return state
 
+# Core graph node functions
 
-def generate_dashboard_json(state: AgentState) -> AgentState:
+def generate_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Generate dashboard JSON using the specified LLM.
+    Generate a Grafana dashboard JSON based on the user's prompt.
     
     Args:
-        state: Current agent state
+        state: Current state containing the user's prompt and configuration
         
     Returns:
-        Updated agent state with generated dashboard JSON
+        Updated state with generated dashboard JSON
     """
-    llm = get_llm(state.model_provider)
-    chain = create_dashboard_generator_chain(llm)
-    
-    # If we have RAG context, include it in the prompt
-    if state.rag_context:
-        formatted_context = format_rag_context_as_text(state.rag_context)
-        prompt = RAG_AUGMENTED_PROMPT.format(
-            user_prompt=state.prompt, rag_context=formatted_context
-        )
-    else:
-        prompt = state.prompt
-    
-    # Try to generate valid JSON
     try:
-        response = chain.invoke({"prompt": prompt, "chat_history": []})
-        # Extract JSON from potential text
-        dashboard_str = response.content
-        # Remove markdown code blocks if present
-        if dashboard_str.startswith("```json"):
-            dashboard_str = dashboard_str.split("```json")[1]
-        if dashboard_str.startswith("```"):
-            dashboard_str = dashboard_str.split("```")[1]
-        if dashboard_str.endswith("```"):
-            dashboard_str = dashboard_str.rsplit("```", 1)[0]
+        prompt = state.get("prompt")
+        if not prompt:
+            return {
+                **state,
+                "is_valid": False,
+                "error": "No prompt provided"
+            }
+            
+        # Get the LLM instance
+        llm = get_llm(state.get("model_provider", ModelProvider.OPENAI4O))
         
-        # Parse the result as JSON
-        dashboard_json = json.loads(dashboard_str.strip())
-        state.dashboard_json = dashboard_json
-    except Exception as e:
-        state.error_details = {
-            "stage": "generation",
-            "error": str(e),
-            "message": "Failed to generate valid JSON",
+        # Create the generation chain
+        generation_chain = create_dashboard_generator_chain(llm)
+        
+        # Prepare the context
+        context = {
+            "prompt": prompt,
+            "chat_history": state.get("chat_history", [])
         }
-    
-    return state
+        
+        if state.get("use_rag"):
+            rag_context = state.get("rag_context", "")
+            context["prompt"] = RAG_AUGMENTED_PROMPT.format(
+                user_prompt=prompt,
+                rag_context=rag_context
+            )
+        
+        # Generate the dashboard JSON
+        response = generation_chain.invoke(context)
+        
+        # Parse the response
+        try:
+            dashboard_json = json.loads(response)
+        except json.JSONDecodeError:
+            # Try to extract JSON if wrapped in markdown
+            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response, re.DOTALL)
+            if json_match:
+                dashboard_json = json.loads(json_match.group(1))
+            else:
+                raise ValueError("Could not parse JSON from response")
+        
+        return {
+            **state,
+            "dashboard_json": dashboard_json,
+            "is_valid": None  # Will be determined by validation
+        }
+        
+    except Exception as e:
+        return {
+            **state,
+            "is_valid": False,
+            "error": f"Generation error: {str(e)}"
+        }
 
 
-def validate_json(state: AgentState) -> AgentState:
+def validate_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Validate the generated dashboard JSON.
     
     Args:
-        state: Current agent state
+        state: Current state containing the dashboard JSON
         
     Returns:
-        Updated agent state with validation results
+        Updated state with validation results
     """
-    if not state.dashboard_json:
-        state.validation_result = DashboardValidationResult(is_valid=False, errors=[])
-        return state
-    
-    validation_result = validate_dashboard_json(state.dashboard_json)
-    state.validation_result = validation_result
-    
-    return state
+    try:
+        dashboard_json = state.get("dashboard_json")
+        if not dashboard_json:
+            return {
+                **state,
+                "is_valid": False,
+                "error": "No dashboard JSON found in state"
+            }
+            
+        # Validate required fields
+        required_fields = ["title", "panels"]
+        missing_fields = [field for field in required_fields if field not in dashboard_json]
+        
+        if missing_fields:
+            return {
+                **state,
+                "is_valid": False,
+                "error": f"Missing required fields: {', '.join(missing_fields)}"
+            }
+            
+        # Validate panels
+        panels = dashboard_json.get("panels", [])
+        for panel in panels:
+            if not isinstance(panel, dict):
+                return {
+                    **state,
+                    "is_valid": False,
+                    "error": "Invalid panel format"
+                }
+                
+            # Check required panel fields
+            required_panel_fields = ["id", "type", "title", "gridPos"]
+            missing_panel_fields = [
+                field for field in required_panel_fields 
+                if field not in panel
+            ]
+            
+            if missing_panel_fields:
+                return {
+                    **state,
+                    "is_valid": False,
+                    "error": f"Panel missing required fields: {', '.join(missing_panel_fields)}"
+                }
+                
+            # Validate gridPos
+            grid_pos = panel.get("gridPos", {})
+            required_grid_fields = ["h", "w", "x", "y"]
+            missing_grid_fields = [
+                field for field in required_grid_fields 
+                if field not in grid_pos
+            ]
+            
+            if missing_grid_fields:
+                return {
+                    **state,
+                    "is_valid": False,
+                    "error": f"GridPos missing required fields: {', '.join(missing_grid_fields)}"
+                }
+        
+        # If we get here, validation passed
+        return {
+            **state,
+            "is_valid": True,
+            "error": None
+        }
+        
+    except Exception as e:
+        return {
+            **state,
+            "is_valid": False,
+            "error": f"Validation error: {str(e)}"
+        }
 
 
-def fix_json(state: AgentState) -> AgentState:
+def end_generation(state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    End the generation process and return final state.
+    
+    Args:
+        state: Current state
+        
+    Returns:
+        Final state with status
+    """
+    is_valid = state.get("is_valid", False)
+    error = state.get("error")
+    
+    return {
+        **state,
+        "status": "completed" if is_valid else "failed",
+        "error_message": error if error else None
+    }
+
+
+def fix_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Fix validation errors in the dashboard JSON.
     
     Args:
-        state: Current agent state
+        state: Current state containing the dashboard JSON and error information
         
     Returns:
-        Updated agent state with fixed dashboard JSON
+        Updated state with fixed dashboard JSON
     """
-    # Increment retry counter
-    state.current_retry += 1
-    
-    # If we've exceeded max retries, don't attempt another fix
-    if state.current_retry > state.max_retries:
-        state.error_details = {
-            "stage": "fix",
-            "error": "Max retries exceeded",
-            "message": "Failed to fix JSON after maximum retry attempts",
-        }
-        return state
-    
-    if not state.validation_result or not state.dashboard_json:
-        return state
-    
-    # Extract error patterns for better context
-    error_patterns = extract_error_patterns(state.validation_result)
-    
-    llm = get_llm(state.model_provider)
-    fix_chain = create_dashboard_fix_chain(llm)
-    
     try:
-        # Format the dashboard JSON for the prompt
-        dashboard_str = json.dumps(state.dashboard_json, indent=2)
+        dashboard_json = state.get("dashboard_json")
+        error = state.get("error")
         
-        # Invoke the fix chain
+        if not dashboard_json or not error:
+            logger.warning("Missing dashboard JSON or error information in fix_dashboard_json")
+            return {
+                **state,
+                "is_valid": False,
+                "error": "Missing dashboard JSON or error information",
+                "status": "failed",  # Mark as failed to break the loop
+                "error_message": "Missing dashboard JSON or error information"
+            }
+            
+        # Get the current retry count and max retries
+        retry_count = state.get("retry_count", 0) 
+        max_retries = state.get("max_retries", 3)
+        
+        # Safety check - don't retry more than max_retries
+        if retry_count >= max_retries:
+            logger.warning(f"Max retries ({max_retries}) reached in fix_dashboard_json")
+            return {
+                **state,
+                "is_valid": False,
+                "error": f"Failed to fix dashboard after {retry_count} attempts",
+                "status": "failed",
+                "error_message": f"Failed to fix dashboard after {retry_count} attempts"
+            }
+            
+        # Update retry count immediately to ensure we don't loop forever
+        retry_count += 1
+        logger.info(f"Fix attempt {retry_count}/{max_retries} starting")
+            
+        # Get the LLM instance
+        llm = get_llm(state.get("model_provider", ModelProvider.OPENAI4O))
+        
+        # Create the fix chain
+        fix_chain = create_dashboard_fix_chain(llm)
+        
+        # Prepare input for the chain
+        json_str = json.dumps(dashboard_json, indent=2) if isinstance(dashboard_json, dict) else str(dashboard_json)
+        
+        # Run the chain
+        logger.debug(f"Sending error for fixing: {error[:100]}...")
         response = fix_chain.invoke({
-            "dashboard_json": dashboard_str,
-            "error_patterns": "\n".join(error_patterns)
+            "dashboard_json": json_str,
+            "error_patterns": error
         })
         
-        # Extract JSON from the response
-        fixed_json_str = response.content
-        # Remove markdown code blocks if present
-        if fixed_json_str.startswith("```json"):
-            fixed_json_str = fixed_json_str.split("```json")[1]
-        if fixed_json_str.startswith("```"):
-            fixed_json_str = fixed_json_str.split("```")[1]
-        if fixed_json_str.endswith("```"):
-            fixed_json_str = fixed_json_str.rsplit("```", 1)[0]
+        # Parse the response
+        try:
+            # Log the raw response for debugging
+            logger.debug(f"Raw response from fix chain: {response[:200]}...")
+            
+            # If the response is a string, try to parse it as JSON
+            if isinstance(response, str):
+                # Try to extract JSON if wrapped in markdown
+                json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response, re.DOTALL)
+                if json_match:
+                    fixed_json_str = json_match.group(1)
+                    logger.debug(f"Extracted JSON from markdown: {fixed_json_str[:100]}...")
+                    fixed_json = json.loads(fixed_json_str)
+                else:
+                    # Try direct JSON parsing
+                    fixed_json = json.loads(response)
+            else:
+                # If it's an object with content attribute (like an LLM response)
+                content = getattr(response, "content", response)
+                if isinstance(content, str):
+                    # Try to extract JSON if wrapped in markdown
+                    json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
+                    if json_match:
+                        fixed_json = json.loads(json_match.group(1))
+                    else:
+                        # Try direct JSON parsing
+                        fixed_json = json.loads(content)
+                else:
+                    # If it's already a dict, use it directly
+                    fixed_json = content
+        except Exception as json_error:
+            logger.error(f"Failed to parse fixed JSON: {str(json_error)}")
+            if retry_count >= max_retries:
+                logger.error(f"Failed on final retry ({retry_count}/{max_retries})")
+                return {
+                    **state,
+                    "is_valid": False,
+                    "error": f"Failed to parse fixed JSON: {str(json_error)}",
+                    "status": "failed",
+                    "error_message": f"Failed to parse fixed JSON: {str(json_error)}",
+                    "retry_count": retry_count
+                }
+            else:
+                # Return with current retry count but no state change
+                return {
+                    **state,
+                    "retry_count": retry_count,
+                    "is_valid": False,
+                    "error": f"Parsing error in fix attempt {retry_count}: {str(json_error)}"
+                }
         
-        # Parse the fixed JSON
-        fixed_json = json.loads(fixed_json_str.strip())
-        state.dashboard_json = fixed_json
-    except Exception as e:
-        state.error_details = {
-            "stage": "fix",
-            "error": str(e),
-            "message": "Failed to fix dashboard JSON",
+        # Log the fix attempt
+        logger.info(f"Fix attempt {retry_count}/{max_retries} completed")
+        
+        return {
+            **state,
+            "dashboard_json": fixed_json,
+            "retry_count": retry_count,
+            "is_valid": None  # Will be determined by next validation
         }
-    
-    return state
+        
+    except Exception as e:
+        logger.error(f"Error in fix_dashboard_json: {str(e)}")
+        
+        # Return error state to break the loop
+        return {
+            **state,
+            "is_valid": False,
+            "error": f"Fix error: {str(e)}",
+            "status": "failed",  # Mark as failed to break the loop
+            "error_message": f"Fix error: {str(e)}",
+            "retry_count": state.get("retry_count", 0) + 1  # Increment retry count to avoid infinite loops
+        }
 
+# RAG functions
 
-def human_in_loop(state: AgentState) -> AgentState:
+def retrieve_similar_dashboards(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Pause execution for human intervention.
-    
-    In a real system, this would interact with an API to get human feedback.
-    For this demo, we'll simulate by setting a flag in the state.
+    Retrieve similar dashboards for RAG context.
     
     Args:
-        state: Current agent state
+        state: Current state with user prompt
         
     Returns:
-        Updated agent state with human feedback flag
+        Updated state with retrieved dashboards
     """
-    # Mark the state as requiring human intervention
-    state.human_feedback = {
-        "required": True,
-        "message": "Validation errors persist after automatic fixing attempts",
-        "dashboard_json": state.dashboard_json,
-        "validation_result": state.validation_result,
+    try:
+        prompt = state.get("prompt")
+        if not prompt:
+            return {
+                **state,
+                "rag_context": None,
+                "error": "No prompt provided for retrieval"
+            }
+            
+        # Retrieve similar dashboards
+        rag_context = get_rag_context(prompt)
+        
+        return {
+            **state,
+            "rag_context": rag_context
+        }
+    except Exception as e:
+        return {
+            **state,
+            "rag_context": None,
+            "error": f"Retrieval error: {str(e)}"
+        }
+
+
+def enhance_with_rag(state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enhance the prompt with RAG context.
+    
+    Args:
+        state: Current state with rag context
+        
+    Returns:
+        Updated state with enhanced prompt
+    """
+    try:
+        prompt = state.get("prompt")
+        rag_context = state.get("rag_context")
+        
+        if not prompt:
+            return {
+                **state,
+                "error": "No prompt provided for enhancement"
+            }
+            
+        if not rag_context:
+            # No RAG context, just proceed with original prompt
+            return state
+            
+        # Format RAG context
+        formatted_context = format_rag_context_as_text(rag_context)
+        
+        # Enhance the prompt
+        enhanced_prompt = RAG_AUGMENTED_PROMPT.format(
+            user_prompt=prompt,
+            rag_context=formatted_context
+        )
+        
+        return {
+            **state,
+            "enhanced_prompt": enhanced_prompt
+        }
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Enhancement error: {str(e)}"
+        }
+
+# Graph creation
+
+def create_dashboard_generation_graph(
+    llm: BaseChatModel,
+    model_provider: ModelProvider,
+    use_rag: bool = False,
+    max_retries: int = 3,
+) -> Graph:
+    """
+    Create the graph for dashboard generation workflow.
+    
+    Args:
+        llm: The LLM to use for generation
+        model_provider: The model provider to use
+        use_rag: Whether to use RAG for enhanced generation
+        max_retries: Maximum number of retries for validation
+        
+    Returns:
+        The workflow graph
+    """
+    # Create the nodes
+    nodes = {
+        "generate": generate_dashboard_json,
+        "validate": validate_dashboard_json,
+        "fix": fix_dashboard_json,
+        "end": end_generation,
     }
     
-    return state
-
-
-def should_retry(state: AgentState) -> bool:
-    """
-    Determine if the agent should retry JSON generation/fixing.
+    if use_rag:
+        nodes["retrieve"] = retrieve_similar_dashboards
+        nodes["enhance"] = enhance_with_rag
     
-    Args:
-        state: Current agent state
-        
-    Returns:
-        True if retry is needed, False otherwise
-    """
-    # If validation succeeded, no need to retry
-    if state.validation_result and state.validation_result.is_valid:
-        return False
-    
-    # If we've exceeded max retries, don't retry
-    if state.current_retry >= state.max_retries:
-        return False
-    
-    # If there are no errors to fix, don't retry
-    if not state.dashboard_json or not state.validation_result:
-        return False
-    
-    return True
-
-
-def should_ask_human(state: AgentState) -> bool:
-    """
-    Determine if human intervention is needed.
-    
-    Args:
-        state: Current agent state
-        
-    Returns:
-        True if human intervention is needed, False otherwise
-    """
-    # If validation passed, no need for human intervention
-    if state.validation_result and state.validation_result.is_valid:
-        return False
-    
-    # If we've exceeded max retries and validation still fails, ask human
-    if state.current_retry >= state.max_retries and state.validation_result and not state.validation_result.is_valid:
-        return True
-    
-    return False
-
-
-def finalize(state: AgentState) -> AgentState:
-    """
-    Finalize the agent execution and prepare the response.
-    
-    Args:
-        state: Current agent state
-        
-    Returns:
-        The final agent state
-    """
-    # No changes needed, just return the state
-    return state
-
-
-def create_dashboard_generation_graph() -> lg.Graph:
-    """
-    Create the LangGraph for dashboard generation.
-    
-    Returns:
-        A configured LangGraph instance
-    """
-    # Define the graph
-    workflow = lg.Graph()
+    # Create the graph, without recursion_limit (not supported in this version)
+    workflow = Graph()
     
     # Add nodes to the graph
-    workflow.add_node("add_rag_context", add_rag_context)
-    workflow.add_node("generate_dashboard_json", generate_dashboard_json)
-    workflow.add_node("validate_json", validate_json)
-    workflow.add_node("fix_json", fix_json)
-    workflow.add_node("human_in_loop", human_in_loop)
-    workflow.add_node("finalize", finalize)
+    for node_name, node_func in nodes.items():
+        workflow.add_node(node_name, node_func)
     
-    # Add edges to define the flow
-    workflow.add_edge("add_rag_context", "generate_dashboard_json")
-    workflow.add_edge("generate_dashboard_json", "validate_json")
+    # Set entry point based on RAG configuration
+    if use_rag:
+        # If using RAG, start with retrieve
+        workflow.set_entry_point("retrieve")
+        workflow.add_edge("retrieve", "enhance")
+        workflow.add_edge("enhance", "generate")
+    else:
+        # If not using RAG, start with generate
+        workflow.set_entry_point("generate")
     
-    # Add conditional edges
+    # Add common edges
+    workflow.add_edge("generate", "validate")
+    
+    # Define conditional edges correctly with better handling to avoid infinite loops
+    def route_to_end(state):
+        # Safety check - make sure we're not in an infinite loop
+        retry_count = state.get("retry_count", 0)
+        max_retries = state.get("max_retries", 3)
+        
+        # Log the current state for debugging
+        logger.debug(f"route_to_end: is_valid={state.get('is_valid')}, retry_count={retry_count}, max_retries={max_retries}")
+        
+        # If dashboard is valid, go to end
+        if is_valid_dashboard(state):
+            logger.debug("Decision: end (dashboard is valid)")
+            return "end"
+            
+        # If we've hit retry limit, go to end
+        if retry_count >= max_retries:
+            logger.debug("Decision: end (retry limit reached)")
+            return "end"
+            
+        # Otherwise try to fix it
+        logger.debug("Decision: fix (needs correction)")
+        return "fix"
+    
+    # Add a single conditional routing function
     workflow.add_conditional_edges(
-        "validate_json",
-        # If validation fails and we should retry, go to fix_json
-        # If validation fails and we should ask human, go to human_in_loop
-        # Otherwise, go to finalize
-        {
-            should_retry: "fix_json",
-            should_ask_human: "human_in_loop",
-            lambda state: True: "finalize"  # Default case
-        }
+        "validate",
+        route_to_end
     )
     
-    workflow.add_edge("fix_json", "validate_json")  # After fixing, revalidate
-    workflow.add_edge("human_in_loop", "finalize")  # After human intervention, finalize
-    
-    # Set the entry point
-    workflow.set_entry_point("add_rag_context")
+    # Add the remaining edge
+    workflow.add_edge("fix", "validate")
     
     return workflow
 
+# Main execution function
 
 def run_dashboard_agent(
     prompt: str,
     model_provider: ModelProvider = ModelProvider.OPENAI4O,
     max_retries: int = 3,
-    checkpoint: Optional[Checkpoint] = None,
+    use_rag: bool = True,
 ) -> Dict[str, Any]:
     """
     Run the dashboard generation agent.
     
     Args:
-        prompt: The user's natural language prompt
+        prompt: Natural language prompt describing the dashboard
         model_provider: LLM provider to use
-        max_retries: Maximum retries for validation failures
-        checkpoint: Optional checkpoint to resume from
+        max_retries: Maximum number of retry attempts
+        use_rag: Whether to use RAG for enhanced generation
         
     Returns:
-        Dict with the final state and dashboard JSON
+        Generated dashboard JSON and status
     """
-    # Initialize state
-    initial_state = initialize_state(
-        prompt=prompt,
-        model_provider=model_provider,
-        max_retries=max_retries,
-    )
+    logger.info(f"Starting dashboard generation with model: {model_provider}")
+    logger.info(f"Prompt: {prompt}")
     
-    # Create graph
-    workflow = create_dashboard_generation_graph()
-    
-    # Compile the graph into a runnable
-    app = workflow.compile()
-    
-    # Run the graph
-    if checkpoint:
-        # Resume from checkpoint
-        result = app.continue_from_checkpoint(checkpoint)
-    else:
-        # Start new run
-        result = app.invoke(initial_state)
-    
-    # Return the final state
-    return {
-        "state": result,
-        "dashboard_json": result.dashboard_json,
-        "validation_passed": result.validation_result.is_valid if result.validation_result else False,
-        "required_human_intervention": bool(result.human_feedback and result.human_feedback.get("required", False)),
-        "retry_count": result.current_retry,
-    } 
+    try:
+        # Get LLM instance
+        logger.debug("Getting LLM instance")
+        llm = get_llm(model_provider)
+        
+        # Create workflow graph
+        logger.debug(f"Creating workflow graph with use_rag={use_rag}, max_retries={max_retries}")
+        workflow = create_dashboard_generation_graph(
+            llm=llm,
+            model_provider=model_provider,
+            use_rag=use_rag,
+            max_retries=max_retries
+        )
+        
+        # Initialize state
+        logger.debug("Initializing state")
+        initial_state = {
+            "prompt": prompt,
+            "model_provider": model_provider,
+            "use_rag": use_rag,
+            "max_retries": max_retries,
+            "retry_count": 0,
+            "is_valid": None,
+            "error": None,
+            "dashboard_json": None,
+            "chat_history": [],
+            "rag_context": None
+        }
+        
+        # Run the workflow
+        logger.debug("Compiling and running workflow")
+        app = workflow.compile()
+        
+        try:
+            # Standard execution with LangGraph
+            final_state = app.invoke(initial_state)
+            logger.debug(f"Workflow completed. Final state keys: {list(final_state.keys())}")
+            
+            # Extract results
+            status = final_state.get("status", "failed")
+            error_message = final_state.get("error_message") or final_state.get("error")
+            dashboard_json = final_state.get("dashboard_json")
+            
+            logger.info(f"Dashboard generation completed with status: {status}")
+            if error_message:
+                logger.warning(f"Error message: {error_message}")
+            
+            return {
+                "status": status,
+                "error_message": error_message,
+                "dashboard_json": dashboard_json,
+                "retry_count": final_state.get("retry_count", 0)
+            }
+        except Exception as graph_error:
+            # Handle recursion limit or other graph execution errors
+            logger.error(f"Graph execution error: {str(graph_error)}")
+            
+            # Check if it's a recursion error
+            if "recursion" in str(graph_error).lower():
+                error_msg = "Maximum recursion depth exceeded. The graph went into an infinite loop."
+            else:
+                error_msg = f"Workflow error: {str(graph_error)}"
+            
+            return {
+                "status": "failed",
+                "error_message": error_msg,
+                "dashboard_json": initial_state.get("dashboard_json"),
+                "retry_count": initial_state.get("retry_count", 0)
+            }
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Error executing dashboard agent: {str(e)}")
+        logger.error(f"Error details: {error_details}")
+        
+        return {
+            "status": "failed",
+            "error_message": f"Internal error: {str(e)}",
+            "error_details": error_details[:1000],  # Include truncated stack trace
+            "dashboard_json": None,
+            "retry_count": 0
+        } 

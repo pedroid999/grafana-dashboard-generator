@@ -21,7 +21,7 @@ export const dashboardService = {
     // Default values if not provided
     const completeRequest: DashboardGenerationRequest = {
       max_retries: 3,
-      include_rag: true,
+      use_rag: true,
       ...request,
     };
     
@@ -63,7 +63,7 @@ export const dashboardService = {
   /**
    * Format JSON as a string for display
    */
-  formatJsonForDisplay: (json: Record<string, any>): string => {
+  formatJsonForDisplay: (json: Record<string, unknown>): string => {
     return JSON.stringify(json, null, 2);
   },
 }; 

@@ -2,13 +2,13 @@
  * Types for dashboard-related entities
  */
 
-export type ModelProvider = 'openai' | 'anthropic' | 'openai4o';
+export type ModelProvider = 'openai' | 'anthropic' | 'gpt-4o';
 
 export interface DashboardGenerationRequest {
   prompt: string;
   model_provider: ModelProvider;
   max_retries?: number;
-  include_rag?: boolean;
+  use_rag?: boolean;
 }
 
 export interface ValidationError {
@@ -22,13 +22,13 @@ export interface DashboardValidationResult {
 }
 
 export interface HumanFeedbackRequest {
-  dashboard_json: Record<string, any>;
+  dashboard_json: Record<string, unknown>;
   validation_result: DashboardValidationResult;
   correction_suggestions?: string[];
 }
 
 export interface HumanFeedbackResponse {
-  corrected_json: Record<string, any>;
+  corrected_json: Record<string, unknown>;
   feedback?: string;
 }
 
@@ -36,7 +36,7 @@ export interface TaskResponse {
   task_id: string;
   status: 'pending' | 'completed' | 'failed';
   result?: {
-    dashboard_json: Record<string, any>;
+    dashboard_json: Record<string, unknown>;
     validation_passed: boolean;
     required_human_intervention: boolean;
     retry_count: number;
@@ -45,6 +45,6 @@ export interface TaskResponse {
 }
 
 export interface ModelInfo {
-  id: string;
+  id: ModelProvider;
   name: string;
 } 

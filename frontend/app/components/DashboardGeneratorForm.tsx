@@ -11,7 +11,7 @@ interface DashboardFormInputs {
 }
 
 interface ModelOption {
-  id: string;
+  id: ModelProvider;
   name: string;
 }
 
@@ -30,7 +30,7 @@ export default function DashboardGeneratorForm({ onTaskCreated, models }: Dashbo
     formState: { errors },
   } = useForm<DashboardFormInputs>({
     defaultValues: {
-      model_provider: 'openai4o' as ModelProvider,
+      model_provider: 'gpt-4o' as ModelProvider,
     },
   });
   
@@ -54,7 +54,7 @@ export default function DashboardGeneratorForm({ onTaskCreated, models }: Dashbo
   };
   
   return (
-    <div className="bg-white shadow-md rounded-lg p-6">
+    <div className="card">
       <h2 className="text-xl font-semibold mb-4">Dashboard Generator</h2>
       
       {error && (
@@ -65,13 +65,13 @@ export default function DashboardGeneratorForm({ onTaskCreated, models }: Dashbo
       
       <form onSubmit={handleSubmit(onSubmit)}>
         <div className="mb-4">
-          <label htmlFor="prompt" className="block text-sm font-medium text-gray-700 mb-1">
+          <label htmlFor="prompt" className="form-label">
             Dashboard Description
           </label>
           <textarea
             id="prompt"
             rows={5}
-            className="w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="form-input w-full max-w-full box-border"
             placeholder="Describe the dashboard you want to generate, e.g., 'Create a Grafana dashboard for PostgreSQL database monitoring with panels for connections, query performance, and disk usage.'"
             {...register('prompt', { required: 'Please enter a dashboard description' })}
           />
@@ -81,12 +81,12 @@ export default function DashboardGeneratorForm({ onTaskCreated, models }: Dashbo
         </div>
         
         <div className="mb-6">
-          <label htmlFor="model_provider" className="block text-sm font-medium text-gray-700 mb-1">
+          <label htmlFor="model_provider" className="form-label">
             AI Model
           </label>
           <select
             id="model_provider"
-            className="w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500"
+            className="form-input w-full"
             {...register('model_provider')}
           >
             {models.map((model) => (
@@ -97,9 +97,9 @@ export default function DashboardGeneratorForm({ onTaskCreated, models }: Dashbo
           </select>
         </div>
         
-        <div className="bg-gray-50 p-4 rounded-md mb-6">
-          <h3 className="text-sm font-medium text-gray-700 mb-2">Tips for effective dashboard prompts:</h3>
-          <ul className="text-sm text-gray-600 list-disc list-inside space-y-1">
+        <div className="tips-section">
+          <h3 className="tips-title">Tips for effective dashboard prompts:</h3>
+          <ul className="tips-list">
             <li>Include specific data sources (e.g., PostgreSQL, Prometheus, Elasticsearch)</li>
             <li>Mention specific metrics you want to track</li>
             <li>Specify panel types (line graphs, counters, gauges, etc.)</li>
@@ -111,7 +111,7 @@ export default function DashboardGeneratorForm({ onTaskCreated, models }: Dashbo
         <button
           type="submit"
           disabled={isSubmitting}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
+          className="btn btn-primary w-full"
         >
           {isSubmitting ? 'Generating...' : 'Generate Dashboard'}
         </button>

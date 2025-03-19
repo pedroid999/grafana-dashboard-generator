@@ -1,0 +1,130 @@
+Project Title:
+Integrated AI-Driven Grafana Dashboard Generator with Dynamic JSON Creation and LLM-Enabled Prompting
+
+Overall Objective:
+Develop an end-to-end system that automatically generates and updates Grafana dashboards based on natural language prompts and contextual data. The system consists of two main parts: a backend agent (built using LangGraph) that creates and validates dashboard JSON files and a next.js frontend following hexagonal architecture that allows users to compose and refine prompts, select among multiple LLM providers, and receive guidance on creating effective dashboard queries.
+
+Part 1: Backend – LangGraph Agent
+
+Goal:
+Create a robust, modular agent using LangGraph that dynamically generates Grafana dashboard JSON files. The agent must:
+	•	Generate JSON configurations that define panels, data sources, and dashboard metadata.
+	•	Validate the generated JSON against Grafana’s dashboard schema.
+	•	Automatically detect JSON errors and perform retries (with exponential backoff or fixed intervals) to fix validation issues.
+	•	Integrate a Retrieval-Augmented Generation (RAG) pipeline to fetch and incorporate relevant contextual data (e.g., SQL queries, log table formats, metadata from external systems) into the prompt.
+	•	Implement a “human-in-the-loop” (HITL) mechanism so that when JSON validation or generation fails, the agent pauses and requests manual review or input before proceeding.
+	•	Log all operations (including generated outputs, errors, retries, and human interventions) for later auditing and debugging.
+
+Technical Requirements:
+    •	Usa para la gestión de paquetes, build, etc. de python la herramienta uv que ya está instalada en el sistema : https://github.com/astral-sh/uv
+	•	Workflow Design:
+	•	Use LangGraph to build a graph of nodes representing discrete tasks: input parsing, JSON generation, schema validation, error correction, RAG context integration, and human feedback.
+	•	Define conditional edges that route the flow to retry nodes or HITL nodes if the generated JSON does not meet validation criteria.
+	•	JSON Generation and Validation:
+	•	Create a node that generates the JSON dashboard configuration.
+	•	Add a validation node that uses Grafana’s JSON schema (or an equivalent schema validator) to ensure that the dashboard definition is correct.
+	•	If validation fails, automatically trigger a “fix” node that attempts to adjust or regenerate the problematic parts (with a configurable number of retries).
+	•	RAG Integration:
+	•	Implement a node that calls an external retrieval module (or a vector database query) to fetch contextual documentation (for example, SQL examples, log table structures, or best practice guidelines) and inject this into the generation prompt.
+	•	Human-in-the-Loop:
+	•	Include an interrupt node that pauses execution and surfaces the current state (and error messages) to an external human reviewer.
+	•	Allow manual input via the HITL node to override or adjust the JSON output before resuming the graph execution.
+	•	Logging & Error Handling:
+	•	Log every step, including input parameters, generated JSON, validation errors, and HITL events.
+	•	Use retry mechanisms with configurable limits and backoff strategies.
+
+Example Pseudocode Outline (Backend):
+
+# Pseudocode outline for backend agent using LangGraph
+
+def generate_dashboard_json(state):
+    # Use LLM prompt to generate dashboard JSON based on context
+    return generated_json
+
+def validate_json(state):
+    if not is_valid_json(state['dashboard_json']):
+        raise ValidationError("JSON failed schema validation")
+    return state
+
+def fix_json(state):
+    # Attempt corrections or regenerate portions of JSON
+    state['dashboard_json'] = adjust_json(state['dashboard_json'])
+    return state
+
+def add_rag_context(state):
+    # Query RAG system for supplemental info (SQL, table formats, logs)
+    state['rag_context'] = query_rag_system(state['prompt_details'])
+    return state
+
+def human_in_loop(state):
+    # Pause execution and wait for human feedback (e.g., via a web UI)
+    state['human_feedback'] = get_human_feedback(state['error_details'])
+    # Update state accordingly
+    return state
+
+# Graph workflow
+graph = LangGraph()
+graph.add_node("generate_json", generate_dashboard_json)
+graph.add_node("validate", validate_json)
+graph.add_node("fix", fix_json)
+graph.add_node("rag", add_rag_context)
+graph.add_node("human", human_in_loop)
+
+graph.add_edge("generate_json", "validate")
+graph.add_conditional_edge("validate", condition=lambda state: not state.get("validation_passed"),
+                           true_edge="fix", false_edge="rag")
+graph.add_conditional_edge("fix", condition=lambda state: state.get("retry_count", 0) < MAX_RETRIES,
+                           true_edge="validate", false_edge="human")
+graph.add_edge("rag", "finalize")
+
+# Start graph with initial state containing input prompt, context, etc.
+
+Part 2: Frontend – Next.js with hexagonal architecture 
+
+Goal:
+Develop a custom Next.js frontend that provides an interactive interface for entering and refining natural language prompts. This frontend should:
+	•	Allow users to compose prompts that instruct the backend agent on what type of Grafana dashboard to generate.
+	•	Include a model selector (dropdown or radio buttons) to choose among multiple large language models (e.g., OpenAI, Claude, and others) with “OpenAI4o” as the default.
+	•	Offer on-screen guidance (tooltips, examples, or documentation links) about best practices in prompt formation for dashboard generation—such as including sample SQL queries, table definitions for log data, or specific dashboard layout preferences.
+	•	Display real-time previews of the generated JSON (or rendered dashboard elements) if available.
+	•	Provide an option to submit the prompt, trigger the backend agent, and display status (e.g., “generating…”, “validation error”, “awaiting human review”).
+
+Technical Requirements:
+	•	Scaffolding and Setup:
+	•	Use Next.js tools and components to create a frontend project with a hexagonal architecture (components, types, utils, etc.).
+	•	User Interface:
+	•	Create a Next.js based panel that includes:
+	•	A text area (or rich text editor) for entering the prompt.
+	•	A model selector control that lists available LLM providers (e.g., OpenAI, Claude, etc.) with “OpenAI4o” preselected.
+	•	An informational panel or popover with best practice tips for writing prompts (e.g., “Include sample SQL queries such as …”, “To generate log dashboards, specify table structures and field types…”).
+	•	A “Submit” button that sends the prompt to the backend.
+	•	A status indicator that reflects the backend agent’s current state (progress, errors, HITL pause, etc.).
+	•	Integration with Backend:
+	•	Implement an API client in the next.js frontend that calls your backend endpoints to start the workflow and later resume it (using thread IDs, etc.).
+	•	Display the generated JSON (or a summary) and any validation messages in a dedicated UI section.
+	•	User Experience Enhancements:
+	•	Enable live previews: As the user edits the prompt, provide real-time suggestions or warnings if the prompt might be ambiguous.
+	•	Include advanced settings (collapsible section) for users who want to customize parameters like retry limits, RAG context sources, or error-handling preferences.
+
+Example UI Workflow (Frontend):
+	1.	Prompt Editor Section:
+	•	Text area for prompt input with placeholder text (e.g., “Describe the dashboard layout including panels, SQL queries, log tables, etc.”)
+	•	Model selector dropdown with options: “OpenAI4o” (default), “Claude”, “Custom Provider…”
+	2.	Guidance & Tips Section:
+	•	Side panel or tooltip with tips:
+	•	“For SQL dashboards, include your sample query structure.”
+	•	“For log dashboards, mention expected table columns and data types.”
+	3.	Submission and Status:
+	•	On clicking “Submit”, the plugin calls the backend API to start the workflow, receives a thread ID, and displays a “Generating dashboard…” status.
+	•	If the backend returns errors or enters a human-in-the-loop state, display an alert and instructions for next steps.
+	4.	Preview and Finalization:
+	•	Once the backend workflow completes (or after human intervention), the plugin retrieves and displays a preview of the generated dashboard JSON or an embedded panel preview.
+	•	Optionally, allow the user to edit the generated JSON manually before saving it into Grafana.
+
+Final Deliverables:
+	•	A fully functional backend LangGraph agent that can generate, validate, and correct Grafana dashboard JSON files dynamically based on prompts.
+	•	A Next.js frontend using state-of-the-art Next.js AI frontend that enables users to craft prompts, choose LLM models, receive guidance, and view real-time status and previews.
+	•	Documentation and logging for both backend and frontend components to support debugging and future enhancements.
+	•	Configurable options (retry counts, model mappings, HITL triggers) so that the system can be tuned to different use cases and production environments.
+
+This detailed prompt should provide the reasoning LLM with all the context and technical requirements needed to generate code, design workflows, and offer architectural suggestions for your next project.

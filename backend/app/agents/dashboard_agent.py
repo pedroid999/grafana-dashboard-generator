@@ -223,71 +223,48 @@ def validate_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
             return {
                 **state,
                 "is_valid": False,
-                "error": "No dashboard JSON found in state"
+                "error": "No dashboard JSON found in state",
+                "validation_result": None
             }
-            
-        # Validate required fields
-        required_fields = ["title", "panels"]
-        missing_fields = [field for field in required_fields if field not in dashboard_json]
         
-        if missing_fields:
+        # Utilizar la función de validación basada en esquema
+        from app.schemas.grafana_schema import validate_dashboard_json as schema_validate
+        from app.schemas.grafana_schema import extract_error_patterns
+        
+        logger.debug("Validating dashboard JSON using schema validation...")
+        validation_result = schema_validate(dashboard_json)
+        
+        # Si el dashboard es válido según el esquema
+        if validation_result.is_valid:
+            logger.info("Dashboard validation passed successfully")
             return {
                 **state,
-                "is_valid": False,
-                "error": f"Missing required fields: {', '.join(missing_fields)}"
+                "is_valid": True,
+                "error": None,
+                "validation_result": validation_result
             }
-            
-        # Validate panels
-        panels = dashboard_json.get("panels", [])
-        for panel in panels:
-            if not isinstance(panel, dict):
-                return {
-                    **state,
-                    "is_valid": False,
-                    "error": "Invalid panel format"
-                }
-                
-            # Check required panel fields
-            required_panel_fields = ["id", "type", "title", "gridPos"]
-            missing_panel_fields = [
-                field for field in required_panel_fields 
-                if field not in panel
-            ]
-            
-            if missing_panel_fields:
-                return {
-                    **state,
-                    "is_valid": False,
-                    "error": f"Panel missing required fields: {', '.join(missing_panel_fields)}"
-                }
-                
-            # Validate gridPos
-            grid_pos = panel.get("gridPos", {})
-            required_grid_fields = ["h", "w", "x", "y"]
-            missing_grid_fields = [
-                field for field in required_grid_fields 
-                if field not in grid_pos
-            ]
-            
-            if missing_grid_fields:
-                return {
-                    **state,
-                    "is_valid": False,
-                    "error": f"GridPos missing required fields: {', '.join(missing_grid_fields)}"
-                }
         
-        # If we get here, validation passed
-        return {
-            **state,
-            "is_valid": True,
-            "error": None
-        }
+        # Si el dashboard no es válido, extraer patrones de error formateados para el LLM
+        logger.warning(f"Dashboard validation failed with {len(validation_result.errors)} errors")
+        error_patterns = extract_error_patterns(validation_result)
+        formatted_errors = "\n".join(error_patterns)
         
-    except Exception as e:
+        logger.debug(f"Validation errors: {formatted_errors}")
+        
         return {
             **state,
             "is_valid": False,
-            "error": f"Validation error: {str(e)}"
+            "error": formatted_errors,
+            "validation_result": validation_result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in validate_dashboard_json: {str(e)}")
+        return {
+            **state,
+            "is_valid": False,
+            "error": f"Validation error: {str(e)}",
+            "validation_result": None
         }
 
 
@@ -324,6 +301,7 @@ def fix_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
     try:
         dashboard_json = state.get("dashboard_json")
         error = state.get("error")
+        validation_result = state.get("validation_result")  # Recuperar el resultado detallado de validación
         
         if not dashboard_json or not error:
             logger.warning("Missing dashboard JSON or error information in fix_dashboard_json")
@@ -363,13 +341,22 @@ def fix_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
         # Prepare input for the chain
         json_str = json.dumps(dashboard_json, indent=2) if isinstance(dashboard_json, dict) else str(dashboard_json)
         
+        # Preparar errores detallados para el modelo
+        error_details = error
+        if validation_result and hasattr(validation_result, "errors") and validation_result.errors:
+            # Si hay resultados detallados de validación, úsalos
+            from app.schemas.grafana_schema import extract_error_patterns
+            error_patterns = extract_error_patterns(validation_result)
+            error_details = "\n".join(error_patterns)
+            logger.debug(f"Using detailed validation errors: {error_details}")
+        
         # Run the chain
-        logger.debug(f"Sending error for fixing: {error[:100]}...")
+        logger.debug(f"Sending error for fixing: {error_details[:200]}...")
         
         try:
             response = fix_chain.invoke({
                 "dashboard_json": json_str,
-                "error_patterns": error
+                "error_patterns": error_details
             })
             logger.debug(f"Fix chain response type: {type(response)}")
         except Exception as chain_error:
@@ -426,7 +413,8 @@ def fix_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
             **state,
             "dashboard_json": fixed_json,
             "retry_count": retry_count,
-            "is_valid": None  # Will be determined by next validation
+            "is_valid": None,  # Will be determined by next validation
+            "validation_result": None  # Reiniciar el resultado de validación para la próxima iteración
         }
         
     except Exception as e:
@@ -439,7 +427,8 @@ def fix_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
             "error": f"Fix error: {str(e)}",
             "status": "failed",  # Mark as failed to break the loop
             "error_message": f"Fix error: {str(e)}",
-            "retry_count": state.get("retry_count", 0) + 1  # Increment retry count to avoid infinite loops
+            "retry_count": state.get("retry_count", 0) + 1,  # Increment retry count to avoid infinite loops
+            "validation_result": None  # Reiniciar el resultado de validación
         }
 
 # RAG functions

@@ -53,10 +53,7 @@ def get_llm(provider: ModelProvider, **kwargs: Any) -> BaseChatModel:
         elif provider == ModelProvider.OPENAI_O3_MINI:
             # Using the o3-mini model
             return ChatOpenAI(
-                model="o3-mini",  # Using gpt-3.5-turbo as a substitute for o3-mini
-                temperature=temperature,
-                max_tokens=2048,
-                top_p=0.2,
+                model="o3-mini"
             )
         elif provider == ModelProvider.ANTHROPIC:
             return ChatAnthropic(

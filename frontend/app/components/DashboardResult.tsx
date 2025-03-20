@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { AlertCircle, CheckCircle, Clock, XCircle, Plus } from 'lucide-react';
+import { AlertCircle, CheckCircle, Clock, XCircle, Plus, Clipboard } from 'lucide-react';
 import { dashboardService } from '../domain/services/dashboardService';
 import { TaskResponse, HumanFeedbackResponse } from '../types/dashboard';
 
@@ -70,6 +70,18 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
     }
   };
   
+  // Add a helper function to copy text to clipboard
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        // Could add a toast notification here if desired
+        console.log('Text copied to clipboard');
+      })
+      .catch(err => {
+        console.error('Failed to copy text: ', err);
+      });
+  };
+  
   if (!taskStatus) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -134,16 +146,30 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
         borderRadius: '0.375rem', 
         marginBottom: '1.5rem',
         fontFamily: 'monospace',
-        fontSize: '0.875rem'
+        fontSize: '0.875rem',
+        position: 'relative'
       }}>
         <p className="font-medium mb-2">Debug Information:</p>
-        <SyntaxHighlighter 
-          language="json" 
-          style={vscDarkPlus}
-          customStyle={{ margin: 0 }}
-        >
-          {JSON.stringify(taskStatus, null, 2)}
-        </SyntaxHighlighter>
+        <div className="relative">
+          <div className="absolute top-0 right-0 flex items-center p-1 z-10">
+            <button
+              type="button"
+              className="px-2 py-1 rounded text-xs bg-gray-700 text-gray-200 hover:bg-gray-600 focus:outline-none flex items-center"
+              onClick={() => copyToClipboard(JSON.stringify(taskStatus, null, 2))}
+              title="Copy to clipboard"
+            >
+              <Clipboard size={12} className="mr-1" />
+              Copy
+            </button>
+          </div>
+          <SyntaxHighlighter 
+            language="json" 
+            style={vscDarkPlus}
+            customStyle={{ margin: 0 }}
+          >
+            {JSON.stringify(taskStatus, null, 2)}
+          </SyntaxHighlighter>
+        </div>
         <p className="mt-2 text-xs">API Base URL: {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}</p>
       </div>
       
@@ -172,13 +198,26 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
             <label htmlFor="feedbackJson" className="form-label">
               Dashboard JSON (Edit to fix errors)
             </label>
-            <textarea
-              id="feedbackJson"
-              rows={10}
-              className="form-input font-mono text-sm"
-              value={feedbackJson}
-              onChange={(e) => setFeedbackJson(e.target.value)}
-            />
+            <div className="relative">
+              <div className="absolute top-0 right-0 flex items-center p-1 z-10">
+                <button
+                  type="button"
+                  className="px-2 py-1 rounded text-xs bg-gray-700 text-gray-200 hover:bg-gray-600 focus:outline-none flex items-center"
+                  onClick={() => copyToClipboard(feedbackJson)}
+                  title="Copy to clipboard"
+                >
+                  <Clipboard size={12} className="mr-1" />
+                  Copy
+                </button>
+              </div>
+              <textarea
+                id="feedbackJson"
+                rows={10}
+                className="form-input font-mono text-sm w-full"
+                value={feedbackJson}
+                onChange={(e) => setFeedbackJson(e.target.value)}
+              />
+            </div>
           </div>
           
           <div className="mb-4">
@@ -214,14 +253,26 @@ export default function DashboardResult({ taskId, onReset }: DashboardResultProp
           <div style={{ 
             border: '1px solid var(--gray-200)', 
             borderRadius: '0.375rem', 
-            overflow: 'hidden' 
+            overflow: 'hidden',
+            position: 'relative'
           }}>
+            <div className="absolute top-0 right-0 flex items-center p-1 z-10">
+              <button
+                type="button"
+                className="px-2 py-1 rounded text-xs bg-gray-700 text-gray-200 hover:bg-gray-600 focus:outline-none flex items-center"
+                onClick={() => copyToClipboard(JSON.stringify(taskStatus.result?.dashboard_json, null, 2))}
+                title="Copy to clipboard"
+              >
+                <Clipboard size={12} className="mr-1" />
+                Copy
+              </button>
+            </div>
             <SyntaxHighlighter 
               language="json" 
               style={vscDarkPlus}
               customStyle={{ margin: 0, maxHeight: '500px' }}
             >
-              {JSON.stringify(taskStatus.result.dashboard_json, null, 2)}
+              {JSON.stringify(taskStatus.result?.dashboard_json, null, 2)}
             </SyntaxHighlighter>
           </div>
           <p className="mt-4" style={{ fontSize: '0.875rem', color: 'var(--gray-600)' }}>

@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any, Annotated, Dict, List, Optional, TypedDict
 
-from langgraph.graph import Graph
+from langgraph.graph import Graph, END
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -33,7 +33,7 @@ from app.utils.llm import (
 import pdb
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Function definitions for state management 
@@ -217,6 +217,19 @@ def validate_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Updated state with validation results
     """
+    # Verificar que state no sea None
+    if state is None:
+        logger.error("State is None in validate_dashboard_json")
+        return {
+            "is_valid": False,
+            "error": "Internal error: State object is None", 
+            "validation_result": None,
+            "status": "failed",
+            "error_message": "Internal error: State object is None",
+            "dashboard_json": None,
+            "retry_count": 0
+        }
+    
     try:
         dashboard_json = state.get("dashboard_json")
         if not dashboard_json:
@@ -260,6 +273,10 @@ def validate_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Error in validate_dashboard_json: {str(e)}")
+        # Asegurar que tenemos state para el caso de excepción
+        if not isinstance(state, dict):
+            state = {}
+            
         return {
             **state,
             "is_valid": False,
@@ -278,13 +295,32 @@ def end_generation(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Final state with status
     """
+    # Asegurarnos de que state no sea None
+    if state is None:
+        logger.error("State is None in end_generation")
+        return {
+            "status": "failed",
+            "error_message": "Internal error: State object is None",
+            "is_valid": False,
+            "dashboard_json": None,
+            "retry_count": 0
+        }
+    
+    # Log del estado actual para debugging
+    logger.debug(f"End generation state keys: {list(state.keys())}")
+    
     is_valid = state.get("is_valid", False)
     error = state.get("error")
     
+    # Asegurarnos de que se incluyen todas las claves importantes para LangGraph
     return {
         **state,
         "status": "completed" if is_valid else "failed",
-        "error_message": error if error else None
+        "error_message": error if error else "",  # Cambiar None por string vacío
+        # Asegurar que estos campos siempre estén presentes
+        "dashboard_json": state.get("dashboard_json"),
+        "retry_count": state.get("retry_count", 0),
+        "is_valid": is_valid
     }
 
 
@@ -298,6 +334,18 @@ def fix_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Updated state with fixed dashboard JSON
     """
+    # Verificar que state no sea None para evitar errores
+    if state is None:
+        logger.error("State is None in fix_dashboard_json")
+        return {
+            "is_valid": False,
+            "error": "Internal error: State object is None",
+            "status": "failed",
+            "error_message": "Internal error: State object is None",
+            "dashboard_json": None,
+            "retry_count": 0
+        }
+    
     try:
         dashboard_json = state.get("dashboard_json")
         error = state.get("error")
@@ -420,6 +468,10 @@ def fix_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error in fix_dashboard_json: {str(e)}")
         
+        # Ensure we have state for exception case
+        if not isinstance(state, dict):
+            state = {}
+            
         # Return error state to break the loop
         return {
             **state,
@@ -573,12 +625,23 @@ def create_dashboard_generation_graph(
     
     # Define conditional edges correctly with better handling to avoid infinite loops
     def route_to_end(state):
+        # Asegurarse que state no sea None
+        if state is None:
+            logger.error("State is None in route_to_end")
+            # Devolver el nombre del nodo 'end', no un diccionario
+            return "end"
+            
         # Safety check - make sure we're not in an infinite loop
         retry_count = state.get("retry_count", 0)
-        max_retries = state.get("max_retries", 3)
+        max_retries_value = state.get("max_retries", max_retries)
         
         # Log the current state for debugging
-        logger.debug(f"route_to_end: is_valid={state.get('is_valid')}, retry_count={retry_count}, max_retries={max_retries}")
+        logger.debug(f"route_to_end: is_valid={state.get('is_valid')}, retry_count={retry_count}, max_retries={max_retries_value}")
+        
+        # Si existe un fallo en alguna etapa que estableció status=failed, ir a end directamente
+        if state.get("status") == "failed":
+            logger.debug("Decision: end (state marked as failed)")
+            return "end"
         
         # If dashboard is valid, go to end
         if is_valid_dashboard(state):
@@ -586,7 +649,7 @@ def create_dashboard_generation_graph(
             return "end"
             
         # If we've hit retry limit, go to end
-        if retry_count >= max_retries:
+        if retry_count >= max_retries_value:
             logger.debug("Decision: end (retry limit reached)")
             return "end"
             
@@ -602,6 +665,7 @@ def create_dashboard_generation_graph(
     
     # Add the remaining edge
     workflow.add_edge("fix", "validate")
+    workflow.add_edge("end", END)
     
     return workflow
 
@@ -664,6 +728,17 @@ def run_dashboard_agent(
         try:
             # Standard execution with LangGraph
             final_state = app.invoke(initial_state)
+            
+            # Verificar que final_state no sea None
+            if final_state is None:
+                logger.error("Final state returned is None - LangGraph workflow failed to return a valid state")
+                return {
+                    "status": "failed",
+                    "error_message": "Internal error: Workflow returned None instead of a valid state",
+                    "dashboard_json": None,
+                    "retry_count": 0
+                }
+            
             logger.debug(f"Workflow completed. Final state keys: {list(final_state.keys())}")
             
             # Extract results

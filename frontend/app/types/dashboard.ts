@@ -2,7 +2,7 @@
  * Types for dashboard-related entities
  */
 
-export type ModelProvider = 'openai' | 'anthropic' | 'gpt-4o';
+export type ModelProvider = 'openai' | 'anthropic' | 'gpt-4o' | 'o3-mini';
 
 export interface DashboardGenerationRequest {
   prompt: string;

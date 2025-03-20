@@ -10,10 +10,12 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 
 from app.schemas.models import ModelProvider
 
+# Configurar logger
 logger = logging.getLogger(__name__)
 
 def get_llm(provider: ModelProvider, **kwargs: Any) -> BaseChatModel:
@@ -41,12 +43,20 @@ def get_llm(provider: ModelProvider, **kwargs: Any) -> BaseChatModel:
         elif provider == ModelProvider.OPENAI4O:
             # For optimized version, using GPT-4 Turbo with specific settings
             return ChatOpenAI(
-                model="gpt-4-0125-preview",  # Using a known available model
+                model="gpt-4o",  # Using a known available model
                 temperature=temperature,
                 max_tokens=4096,  # Ensure enough context for JSON generation
                 top_p=0.1,  # More focused sampling
                 presence_penalty=0.0,
                 frequency_penalty=0.0,
+            )
+        elif provider == ModelProvider.OPENAI_O3_MINI:
+            # Using the o3-mini model
+            return ChatOpenAI(
+                model="o3-mini",  # Using gpt-3.5-turbo as a substitute for o3-mini
+                temperature=temperature,
+                max_tokens=2048,
+                top_p=0.2,
             )
         elif provider == ModelProvider.ANTHROPIC:
             return ChatAnthropic(
@@ -125,14 +135,18 @@ I have some additional context that might be helpful:
 
 {rag_context}
 
-Please generate a complete, valid JSON configuration for a Grafana dashboard based on this information. 
-Make sure to include all required fields and properties according to the Grafana dashboard schema.
+Using the Grafana dashboard schema documentation and examples provided above, please generate a complete, valid JSON configuration for a Grafana dashboard based on the user's description.
 
-The JSON must include:
-1. A dashboard title
-2. At least one panel with proper configuration
-3. Valid gridPos for each panel
-4. Appropriate data source and query configuration
+Make sure your response follows these guidelines:
+1. Include all required fields for the dashboard (title, panels, etc.)
+2. Each panel must have the required fields (id, type, title, gridPos)
+3. Use appropriate panel types for the visualizations based on the data being displayed
+4. Configure proper data sources and queries that match the user's requirements
+5. Set reasonable visualization options and thresholds if applicable
+6. Organize panels in a logical layout with appropriate gridPos values
+7. Add descriptive titles and appropriate units for all visualizations
+
+Your response should be ONLY the valid JSON object with no additional text or explanations.
 """
 
 
@@ -154,7 +168,15 @@ def create_dashboard_generator_chain(llm: BaseChatModel) -> Any:
         ]
     )
     
-    return prompt | llm
+    # Asegurarse de que el resultado sea un string usando StrOutputParser
+    chain = prompt | llm | StrOutputParser()
+    
+    # Para debugging
+    def log_output(response):
+        logger.debug(f"Generator output type: {type(response)}")
+        return response
+        
+    return chain | log_output
 
 
 def create_dashboard_fix_chain(llm: BaseChatModel) -> Any:
@@ -183,4 +205,12 @@ Please provide the fixed JSON that resolves these errors.
         ]
     )
     
-    return prompt | llm 
+    # Asegurarse de que el resultado sea un string usando StrOutputParser
+    chain = prompt | llm | StrOutputParser()
+    
+    # Para debugging
+    def log_output(response):
+        logger.debug(f"Fix chain output type: {type(response)}")
+        return response
+        
+    return chain | log_output 

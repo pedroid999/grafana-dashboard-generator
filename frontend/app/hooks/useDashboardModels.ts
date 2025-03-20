@@ -27,6 +27,7 @@ export function useDashboardModels() {
         setModels([
           { id: 'gpt-4o', name: 'GPT-4 Optimized (Default)' },
           { id: 'openai', name: 'OpenAI GPT-4 Turbo' },
+          { id: 'o3-mini', name: 'OpenAI o3-mini' },
           { id: 'anthropic', name: 'Anthropic Claude 3 Opus' },
         ]);
       } finally {

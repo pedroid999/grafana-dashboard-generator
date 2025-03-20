@@ -13,6 +13,7 @@ class ModelProvider(str, Enum):
 
     OPENAI = "openai"
     OPENAI4O = "gpt-4o"  # Optimized GPT-4 configuration
+    OPENAI_O3_MINI = "o3-mini"  # OpenAI o3-mini model
     ANTHROPIC = "anthropic"
 
 

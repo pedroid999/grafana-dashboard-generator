@@ -166,6 +166,7 @@ async def list_models() -> Dict[str, List[Dict[str, str]]]:
         "models": [
             {"id": ModelProvider.OPENAI.value, "name": "OpenAI GPT-4 Turbo"},
             {"id": ModelProvider.OPENAI4O.value, "name": "OpenAI4o (Default)"},
+            {"id": ModelProvider.OPENAI_O3_MINI.value, "name": "OpenAI o3-mini"},
             {"id": ModelProvider.ANTHROPIC.value, "name": "Anthropic Claude 3 Opus"},
         ]
     }

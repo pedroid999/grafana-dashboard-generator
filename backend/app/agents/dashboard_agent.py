@@ -97,9 +97,20 @@ def add_rag_context(state: AgentState) -> AgentState:
     Returns:
         Updated agent state with RAG context
     """
-    # DEBUGGING PUNTO 2: Obtención del contexto RAG
-    rag_context = get_rag_context(state.prompt)
-    state.rag_context = rag_context
+    from app.rag.retriever import get_rag_context, format_rag_context_as_text
+    
+    # Retrieve raw context based on the prompt
+    raw_context = get_rag_context(state.prompt)
+    
+    # Format the context as readable text for the prompt
+    formatted_context = format_rag_context_as_text(raw_context)
+    
+    # Store both raw and formatted context in the state
+    state.rag_context = {
+        "raw": raw_context,
+        "formatted": formatted_context
+    }
+    
     return state
 
 # Core graph node functions
@@ -136,31 +147,57 @@ def generate_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
         }
         
         if state.get("use_rag"):
-            rag_context = state.get("rag_context", "")
+            rag_context = state.get("rag_context", {})
+            formatted_context = rag_context.get("formatted", "") if isinstance(rag_context, dict) else ""
             context["prompt"] = RAG_AUGMENTED_PROMPT.format(
                 user_prompt=prompt,
-                rag_context=rag_context
+                rag_context=formatted_context
             )
         
         # Generate the dashboard JSON
-        response = generation_chain.invoke(context)
+        logger.debug(f"Invoking generation chain with context: {str(context)[:200]}...")
+        
+        try:
+            response = generation_chain.invoke(context)
+            logger.debug(f"Response type: {type(response)}")
+        except Exception as chain_error:
+            logger.error(f"Error in generation chain: {str(chain_error)}")
+            # Si quieres hacer un debug interactivo, descomenta la siguiente línea
+            # pdb.set_trace()
+            raise ValueError(f"Generation chain error: {str(chain_error)}")
         
         # Parse the response
         try:
-            dashboard_json = json.loads(response)
-        except json.JSONDecodeError:
-            # Try to extract JSON if wrapped in markdown
-            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response, re.DOTALL)
-            if json_match:
-                dashboard_json = json.loads(json_match.group(1))
+            # Check if response is an AIMessage or similar LLM response object
+            if hasattr(response, "content"):
+                response_text = response.content
             else:
-                raise ValueError("Could not parse JSON from response")
-        
-        return {
-            **state,
-            "dashboard_json": dashboard_json,
-            "is_valid": None  # Will be determined by validation
-        }
+                response_text = str(response)
+                
+            # Log the response for debugging
+            logger.debug(f"Raw LLM response: {response_text[:200]}...")
+            
+            # Try to parse as JSON
+            try:
+                dashboard_json = json.loads(response_text)
+            except json.JSONDecodeError:
+                # Try to extract JSON if wrapped in markdown
+                json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
+                if json_match:
+                    dashboard_json = json.loads(json_match.group(1))
+                else:
+                    raise ValueError("Could not parse JSON from response")
+            
+            return {
+                **state,
+                "dashboard_json": dashboard_json,
+                "is_valid": None  # Will be determined by validation
+            }
+        except Exception as e:
+            logger.error(f"Error parsing response: {str(e)}")
+            logger.error(f"Response type: {type(response)}")
+            logger.error(f"Response content: {str(response)[:500]}")
+            raise ValueError(f"Failed to parse dashboard JSON: {str(e)}")
         
     except Exception as e:
         return {
@@ -328,41 +365,39 @@ def fix_dashboard_json(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # Run the chain
         logger.debug(f"Sending error for fixing: {error[:100]}...")
-        response = fix_chain.invoke({
-            "dashboard_json": json_str,
-            "error_patterns": error
-        })
+        
+        try:
+            response = fix_chain.invoke({
+                "dashboard_json": json_str,
+                "error_patterns": error
+            })
+            logger.debug(f"Fix chain response type: {type(response)}")
+        except Exception as chain_error:
+            logger.error(f"Error in fix chain: {str(chain_error)}")
+            # Si quieres hacer un debug interactivo, descomenta la siguiente línea
+            # pdb.set_trace()
+            raise ValueError(f"Fix chain error: {str(chain_error)}")
         
         # Parse the response
         try:
             # Log the raw response for debugging
-            logger.debug(f"Raw response from fix chain: {response[:200]}...")
+            logger.debug(f"Raw response from fix chain: {str(response)[:200]}...")
             
-            # If the response is a string, try to parse it as JSON
-            if isinstance(response, str):
-                # Try to extract JSON if wrapped in markdown
-                json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response, re.DOTALL)
-                if json_match:
-                    fixed_json_str = json_match.group(1)
-                    logger.debug(f"Extracted JSON from markdown: {fixed_json_str[:100]}...")
-                    fixed_json = json.loads(fixed_json_str)
-                else:
-                    # Try direct JSON parsing
-                    fixed_json = json.loads(response)
+            # Extract content from AIMessage if needed
+            if hasattr(response, "content"):
+                response_text = response.content
             else:
-                # If it's an object with content attribute (like an LLM response)
-                content = getattr(response, "content", response)
-                if isinstance(content, str):
-                    # Try to extract JSON if wrapped in markdown
-                    json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                    if json_match:
-                        fixed_json = json.loads(json_match.group(1))
-                    else:
-                        # Try direct JSON parsing
-                        fixed_json = json.loads(content)
-                else:
-                    # If it's already a dict, use it directly
-                    fixed_json = content
+                response_text = str(response)
+                
+            # Try to extract JSON if wrapped in markdown
+            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
+            if json_match:
+                fixed_json_str = json_match.group(1)
+                logger.debug(f"Extracted JSON from markdown: {fixed_json_str[:100]}...")
+                fixed_json = json.loads(fixed_json_str)
+            else:
+                # Try direct JSON parsing
+                fixed_json = json.loads(response_text)
         except Exception as json_error:
             logger.error(f"Failed to parse fixed JSON: {str(json_error)}")
             if retry_count >= max_retries:
@@ -455,7 +490,7 @@ def enhance_with_rag(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     try:
         prompt = state.get("prompt")
-        rag_context = state.get("rag_context")
+        rag_context = state.get("rag_context", {})
         
         if not prompt:
             return {
@@ -466,10 +501,19 @@ def enhance_with_rag(state: Dict[str, Any]) -> Dict[str, Any]:
         if not rag_context:
             # No RAG context, just proceed with original prompt
             return state
-            
-        # Format RAG context
-        formatted_context = format_rag_context_as_text(rag_context)
         
+        # Get formatted context if available, or format it if not
+        if isinstance(rag_context, dict):
+            formatted_context = rag_context.get("formatted", "")
+            if not formatted_context and "raw" in rag_context:
+                # If we have raw but not formatted, format it now
+                from app.rag.retriever import format_rag_context_as_text
+                formatted_context = format_rag_context_as_text(rag_context["raw"])
+        else:
+            # Legacy context object, use as is
+            from app.rag.retriever import format_rag_context_as_text
+            formatted_context = format_rag_context_as_text(rag_context)
+            
         # Enhance the prompt
         enhanced_prompt = RAG_AUGMENTED_PROMPT.format(
             user_prompt=prompt,
